@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Multiple Timers App</title>
+<style>
+  /* ---------- Design tokens (taken from the Figma screens) ---------- */
+  :root {
+    --bg: #1e1e24;
+    --panel: #34344f;
+    --pill: #3a3a42;
+    --accent: #eff554;
+    --text: #ffffff;
+    --on-accent: #1e1e24;
+    --error: #ff8a8a;
+    color-scheme: dark;
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  *, *::before, *::after { box-sizing: inherit; }
+  html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Roboto", system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+  }
+
+  /* Page layout: one centred column */
+  main {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
+    padding: 28px 16px 48px;
+  }
+  h1 { margin: 0 0 4px; font-size: 1rem; font-weight: 700; }
+
+  /* Shared row style for the input bar, timer rows and the "up" banner */
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    width: min(100%, 440px);
+    padding: 12px 22px;
+    background: var(--panel);
+    border-radius: 8px;
+  }
+  .row-label { font-size: 0.7rem; white-space: nowrap; }
+
+  /* Yellow pill buttons */
+  button {
+    font: inherit;
+    font-size: 0.65rem;
+    font-weight: 500;
+    padding: 5px 16px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--on-accent);
+    cursor: pointer;
+  }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+  /* ---------- Timer input ---------- */
+  .time-inputs {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 1.05rem;
+  }
+  .time-inputs input {
+    width: 2.4ch;
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid var(--text);
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    text-align: center;
+    -moz-appearance: textfield;
+  }
+  .time-inputs input::placeholder { color: var(--text); opacity: 1; }
+  .time-inputs input::-webkit-outer-spin-button,
+  .time-inputs input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  .error { min-height: 1em; margin: -10px 0 0; font-size: 0.7rem; color: var(--error); }
+
+  /* "Current Timers" pill heading */
+  h2 {
+    margin: 0;
+    width: 200px;
+    padding: 5px 0;
+    text-align: center;
+    font-size: 0.65rem;
+    font-weight: 400;
+    background: var(--pill);
+    border-radius: 999px;
+  }
+
+  /* ---------- Timer list ---------- */
+  #timer-list {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .time-left { font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+  .empty { margin: 0; font-size: 0.65rem; }
+
+  /* Timer finished: yellow banner */
+  .timer.ended { background: var(--accent); color: var(--on-accent); justify-content: space-between; }
+  .timer.ended .banner { flex: 1; text-align: center; font-size: 1.05rem; font-weight: 500; }
+  .timer.ended button { background: var(--bg); color: var(--text); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Multiple Timers App</h1>
+
+  <!-- 1. Timer input section -->
+  <form id="timer-form" class="row" novalidate>
+    <label class="row-label" for="hours">Set Time :</label>
+    <div class="time-inputs">
+      <input id="hours" type="number" inputmode="numeric" min="0" max="99" placeholder="hh" aria-label="Hours">
+      <span aria-hidden="true">:</span>
+      <input id="minutes" type="number" inputmode="numeric" min="0" max="59" placeholder="mm" aria-label="Minutes">
+      <span aria-hidden="true">:</span>
+      <input id="seconds" type="number" inputmode="numeric" min="0" max="59" placeholder="ss" aria-label="Seconds">
+    </div>
+    <button type="submit" aria-label="Start new timer">Set</button>
+  </form>
+  <p id="error" class="error" role="alert"></p>
+
+  <!-- 2. Active timers section -->
+  <section aria-labelledby="timers-heading" style="display:contents">
+    <h2 id="timers-heading">Current Timers</h2>
+    <p id="empty" class="empty">You have no timers currently!</p>
+    <ul id="timer-list" aria-live="polite"></ul>
+  </section>
+</main>
+
+<script>
+  // ---------- Element references ----------
+  const form = document.getElementById('timer-form');
+  const inputs = { h: hours, m: minutes, s: seconds };
+  const errorBox = document.getElementById('error');
+  const list = document.getElementById('timer-list');
+  const emptyMsg = document.getElementById('empty');
+
+  // Active timers keyed by id: { end, intervalId, el, display, alarmId }
+  const timers = new Map();
+  let nextId = 0;
+  let audioCtx = null;
+
+  // ---------- Helpers ----------
+  const pad = n => String(n).padStart(2, '0');
+
+  // Format seconds as "hh : mm : ss"
+  function format(total) {
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    return `${pad(h)} : ${pad(m)} : ${pad(total % 60)}`;
+  }
+
+  // Show the empty-state message only when no timers exist
+  function updateEmptyState() {
+    emptyMsg.hidden = timers.size > 0;
+  }
+
+  // ---------- Audio alert (Web Audio beep, no external file needed) ----------
+  function beep() {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.3, audioCtx.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.4);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.45);
+  }
+
+  // ---------- Input handling & validation ----------
+  function readInput() {
+    const val = el => (el.value.trim() === '' ? 0 : Number(el.value));
+    const h = val(inputs.h), m = val(inputs.m), s = val(inputs.s);
+    const all = [h, m, s];
+    if (all.some(n => !Number.isInteger(n) || n < 0)) return { error: 'Enter whole numbers, 0 or higher.' };
+    if (h > 99 || m > 59 || s > 59) return { error: 'Use hours 0–99, minutes and seconds 0–59.' };
+    if (h + m + s === 0) return { error: 'Enter a time greater than zero.' };
+    return { total: h * 3600 + m * 60 + s };
+  }
+
+  form.addEventListener('submit', e => {
+    e.preventDefault();
+    const result = readInput();
+    if (result.error) { errorBox.textContent = result.error; return; }
+    errorBox.textContent = '';
+
+    // Audio can only start after a user gesture, so prepare it here
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+
+    startTimer(result.total);
+  });
+
+  // ---------- Timer lifecycle ----------
+  function startTimer(totalSeconds) {
+    const id = nextId++;
+    const li = document.createElement('li');
+    li.className = 'row timer';
+    li.dataset.id = id;
+    li.innerHTML = `
+      <span class="row-label">Time Left :</span>
+      <span class="time-left" role="timer">${format(totalSeconds)}</span>
+      <button type="button" data-id="${id}" aria-label="Stop timer">Delete</button>`;
+    list.appendChild(li);
+
+    // Use an end timestamp so the countdown stays accurate even if ticks drift
+    const timer = {
+      end: Date.now() + totalSeconds * 1000,
+      el: li,
+      display: li.querySelector('.time-left'),
+      intervalId: null,
+      alarmId: null
+    };
+    timer.intervalId = setInterval(() => tick(id), 1000);
+    timers.set(id, timer);
+    updateEmptyState();
+  }
+
+  function tick(id) {
+    const t = timers.get(id);
+    if (!t) return;
+    const left = Math.max(0, Math.round((t.end - Date.now()) / 1000));
+    t.display.textContent = format(left);
+    if (left === 0) finish(id);
+  }
+
+  // Timer reached zero: stop counting, switch to the "Timer Is Up !" design, play sound
+  function finish(id) {
+    const t = timers.get(id);
+    clearInterval(t.intervalId);
+    t.el.classList.add('ended');
+    t.el.innerHTML = `
+      <span class="banner">Timer Is Up !</span>
+      <button type="button" data-id="${id}" aria-label="Stop alarm">Stop</button>`;
+    beep();
+    let repeats = 0;
+    // Repeat the beep until stopped (max ~30 seconds)
+    t.alarmId = setInterval(() => { beep(); if (++repeats >= 30) clearInterval(t.alarmId); }, 1000);
+  }
+
+  // Remove a timer (Delete while running, Stop once it has ended)
+  list.addEventListener('click', e => {
+    const btn = e.target.closest('button[data-id]');
+    if (!btn) return;
+    const id = Number(btn.dataset.id);
+    const t = timers.get(id);
+    if (!t) return;
+    clearInterval(t.intervalId);
+    clearInterval(t.alarmId);
+    t.el.remove();
+    timers.delete(id);
+    updateEmptyState();
+  });
+</script>
+</body>
+</html>
